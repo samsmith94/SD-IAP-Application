@@ -19,6 +19,9 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "fatfs.h"
+#include "spi.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -26,6 +29,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
+#include "fatfs_sd.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -48,6 +52,18 @@
 volatile int index_counter = 0;
 volatile char single_char;
 volatile char one_line[150];
+
+
+FATFS fs;
+FIL fil;
+FRESULT fresult;
+
+char buffer[1024];
+UINT br, bw;
+
+FATFS *pfs;
+DWORD fre_clust;
+uint32_t total, free_space;
 
 /* USER CODE END PV */
 
@@ -91,6 +107,10 @@ int main(void) {
 	MX_GPIO_Init();
 	MX_USART2_UART_Init();
 	MX_USART3_UART_Init();
+	MX_FATFS_Init();
+	MX_SPI2_Init();
+	MX_TIM2_Init();
+	MX_TIM3_Init();
 	/* USER CODE BEGIN 2 */
 	HAL_NVIC_SetPriority(EXTI15_10_IRQn, 1, 1);
 	HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
@@ -98,6 +118,34 @@ int main(void) {
 	HAL_UART_Receive_IT(&huart3, &single_char, 1);
 
 	printf("Hello!\r\n");
+
+	fresult = f_mount(&fs, "", 0);
+	if (fresult != FR_OK) {
+		printf("Error when mounting SD card.\r\n");
+	} else {
+		printf("SD card mounted successfully.\r\n");
+	}
+	HAL_Delay(10);
+	// Check free space
+	f_getfree("", &fre_clust, &pfs);
+
+	total = (uint32_t) ((pfs->n_fatent - 2) * pfs->csize * 0.5);
+	printf("SD card total size: %.2f GB\r\n", total / 1024.0 / 1024.0);
+
+	free_space = (uint32_t) (fre_clust * pfs->csize * 0.5);
+	printf("SD card free space: %.2f GB\r\n", free_space / 1024.0 / 1024.0);
+
+	// Open file to write/ create a file if it doesn't exist
+	fresult = f_open(&fil, "sleep.txt", FA_OPEN_ALWAYS | FA_READ | FA_WRITE);
+	HAL_Delay(10);
+	// Writing text
+	fresult = f_write(&fil, "Hello World!\r\n", strlen("Hello World!\r\n"),
+			&bw);
+	fresult = f_write(&fil, "2. line\r\n", strlen("2. line\r\n"), &bw);
+
+	// Close file
+	fresult = f_close(&fil);
+	printf("file1.txt created and the data is written.\r\n");
 
 #define AT_BUFF_SIZE	100
 	char at_buff[AT_BUFF_SIZE] = { '\0' };
@@ -139,22 +187,22 @@ int main(void) {
 
 	if (remainder != 0) {
 		total_chunks += 1;
-		printf("Total chunks: %d (%d complete and %d remaining bytes.\r\n", total_chunks, total_chunks-1, remainder);
+		printf("Total chunks: %d (%d complete and %d remaining bytes.\r\n",
+				total_chunks, total_chunks - 1, remainder);
 	} else {
-		printf("Total chunks: %d (exactly, without remaining bytes).\r\n", total_chunks);
+		printf("Total chunks: %d (exactly, without remaining bytes).\r\n",
+				total_chunks);
 	}
-
-
-
 
 	uint16_t from = 0;
 	uint16_t to = from + chunk_size;
 
 	for (int i = 0; i < total_chunks; i++) {
-		printf("========================================\r\n");
-		printf("Chunk [%d/%d] (from byte %d to byte %d)\r\n", i+1, total_chunks, from, to);
+
+		printf("Chunk [%d/%d] (from byte %d to byte %d)\r\n", i + 1,
+				total_chunks, from, to);
 		sprintf(at_buff,
-				"AT+HTTPPARA=\"URL\",\"http://fdca5ef5748c.ngrok.io/fota/chunks/bytes/%d-%d\"\r\n",
+				"AT+HTTPPARA=\"URL\",\"http://30bed96aa41a.ngrok.io/fota/chunks/bytes/%d-%d\"\r\n",
 				from, to);
 
 		if (i == (total_chunks - 2)) {
@@ -167,7 +215,7 @@ int main(void) {
 
 		HAL_UART_Transmit(&huart3, at_buff, strlen(at_buff), 0xFFFF);
 		memset(at_buff, '\0', AT_BUFF_SIZE);
-		HAL_Delay(500);
+		HAL_Delay(1000);
 
 		sprintf(at_buff, "AT+HTTPACTION=0\r\n");
 		HAL_UART_Transmit(&huart3, at_buff, strlen(at_buff), 0xFFFF);
@@ -177,10 +225,13 @@ int main(void) {
 		sprintf(at_buff, "AT+HTTPREAD\r\n");
 		HAL_UART_Transmit(&huart3, at_buff, strlen(at_buff), 0xFFFF);
 		memset(at_buff, '\0', AT_BUFF_SIZE);
-		HAL_Delay(2000);
+		HAL_Delay(1000);
+		printf("=============================================\r\n");
 	}
 
-
+	printf("Performing self-reset in 2 seconds...\r\n");
+	HAL_Delay(2000);
+	HAL_NVIC_SystemReset();
 
 	/* USER CODE END 2 */
 
@@ -192,7 +243,7 @@ int main(void) {
 		/* USER CODE BEGIN 3 */
 		printf("Hi from application!\r\n");
 		HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-		HAL_Delay(500);
+		HAL_Delay(1500);
 	}
 	/* USER CODE END 3 */
 }
@@ -270,7 +321,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *husart) {
 			index_counter++;
 		} else {
 			one_line[index_counter] = '\0';
-			printf("%s\r\n", one_line);
+			printf("%s ", one_line);
 			index_counter = 0;
 		}
 		HAL_UART_Receive_IT(&huart3, &single_char, 1);
